@@ -12,14 +12,17 @@ const Categories = () => {
 
   const [activeIndex, setActiveIndex] = useState(total);
 
-  //Navigate to collection page with category
+  const activeIndexRef = useRef(activeIndex);
+  useEffect(() => {
+    activeIndexRef.current = activeIndex;
+  }, [activeIndex]);
+
   const handleCategoryClick = (name) => {
     navigate("/collection", {
       state: { category: name.toLowerCase() },
     });
   };
 
-  //smooth horizontal scroll only
   const scrollToIndex = useCallback((index, behavior = "smooth") => {
     const container = scrollRef.current;
     const child = container?.children[index];
@@ -31,102 +34,127 @@ const Categories = () => {
     container.scrollTo({ left, behavior });
   }, []);
 
-  //start from middle copy
   useEffect(() => {
     const id = setTimeout(() => {
       scrollToIndex(total, "auto");
     }, 100);
-
     return () => clearTimeout(id);
   }, [scrollToIndex, total]);
 
-  //STABLE infinite loop
+  // STABLE & JUMP-FREE infinite loop
   useEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
 
+    let scrollTimeout;
+    let ticking = false;
+
     const handleScroll = () => {
-      const maxScroll = container.scrollWidth;
-      const visibleWidth = container.offsetWidth;
-      const scrollLeft = container.scrollLeft;
+      if (!ticking) {
+        window.requestAnimationFrame(() => {
+          const visibleWidth = container.offsetWidth;
+          const scrollLeft = container.scrollLeft;
+          const center = scrollLeft + visibleWidth / 2;
 
-      const sectionWidth = maxScroll / 3;
+          let closestIndex = 0;
+          let closestDistance = Infinity;
+          const children = container.children;
 
-      //SAFE reset (far from center -> invisible)
-      if (scrollLeft <= sectionWidth * 0.2) {
-        container.scrollTo({
-          left: scrollLeft + sectionWidth,
-          behavior: "auto",
+          for (let i = 0; i < children.length; i++) {
+            const childCenter =
+              children[i].offsetLeft + children[i].offsetWidth / 2;
+            const distance = Math.abs(center - childCenter);
+
+            if (distance < closestDistance) {
+              closestDistance = distance;
+              closestIndex = i;
+            }
+          }
+
+          setActiveIndex((prev) =>
+            prev !== closestIndex ? closestIndex : prev,
+          );
+
+          // Debounce the infinite loop reset
+          clearTimeout(scrollTimeout);
+          scrollTimeout = setTimeout(() => {
+            if (!children || children.length < total * 3) return;
+
+            // FIX 1: Exact pixel width of 1 set of categories (Ignores padding issues)
+            const exactSectionWidth =
+              children[total].offsetLeft - children[0].offsetLeft;
+            const currentScroll = container.scrollLeft;
+
+            // Teleport exactly by the section width when hitting boundaries
+            if (closestIndex < total) {
+              container.scrollTo({
+                left: currentScroll + exactSectionWidth,
+                behavior: "auto",
+              });
+            } else if (closestIndex >= total * 2) {
+              container.scrollTo({
+                left: currentScroll - exactSectionWidth,
+                behavior: "auto",
+              });
+            }
+          }, 150); // Fires only after scrolling completely stops
+
+          ticking = false;
         });
-        return;
+        ticking = true;
       }
-
-      if (scrollLeft >= sectionWidth * 1.8) {
-        container.scrollTo({
-          left: scrollLeft - sectionWidth,
-          behavior: "auto",
-        });
-        return;
-      }
-
-      // Detect active item (center)
-      const children = Array.from(container.children);
-      const center = scrollLeft + visibleWidth / 2;
-
-      let closestIndex = 0;
-      let closestDistance = Infinity;
-
-      children.forEach((child, index) => {
-        const childCenter = child.offsetLeft + child.offsetWidth / 2;
-
-        const distance = Math.abs(center - childCenter);
-
-        if (distance < closestDistance) {
-          closestDistance = distance;
-          closestIndex = index;
-        }
-      });
-
-      setActiveIndex(closestIndex);
     };
 
-    container.addEventListener("scroll", handleScroll);
-    return () => container.removeEventListener("scroll", handleScroll);
-  }, []);
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      container.removeEventListener("scroll", handleScroll);
+      clearTimeout(scrollTimeout);
+    };
+  }, [total]);
 
-  // Auto-scroll (natural timing)
+  // Auto-scroll
   useEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
 
     let interval;
 
-    const start = () => {
+    const startAutoScroll = () => {
+      clearInterval(interval);
       interval = setInterval(
         () => {
-          scrollToIndex(activeIndex + 1);
+          scrollToIndex(activeIndexRef.current + 1);
         },
         2800 + Math.random() * 800,
       );
     };
 
-    start();
+    startAutoScroll();
 
-    const stop = () => clearInterval(interval);
+    const stopAutoScroll = () => clearInterval(interval);
 
-    container.addEventListener("touchstart", stop);
-    container.addEventListener("mousedown", stop);
+    container.addEventListener("touchstart", stopAutoScroll, { passive: true });
+    container.addEventListener("mousedown", stopAutoScroll);
+    container.addEventListener("touchend", startAutoScroll, { passive: true });
+    container.addEventListener("mouseup", startAutoScroll);
+    container.addEventListener("mouseleave", startAutoScroll);
 
     return () => {
       clearInterval(interval);
-      container.removeEventListener("touchstart", stop);
-      container.removeEventListener("mousedown", stop);
+      container.removeEventListener("touchstart", stopAutoScroll);
+      container.removeEventListener("mousedown", stopAutoScroll);
+      container.removeEventListener("touchend", startAutoScroll);
+      container.removeEventListener("mouseup", startAutoScroll);
+      container.removeEventListener("mouseleave", startAutoScroll);
     };
-  }, [activeIndex, scrollToIndex]);
+  }, [scrollToIndex]);
+
+  // FIX 2: Compute real active index so clones share the exact same CSS states
+  // This prevents the scaling animation from "flashing/jumping" during the teleport.
+  const activeRealIndex = activeIndex % total;
 
   return (
     <div className="px-4 sm:px-8 lg:px-16 py-10">
-      {/* Title */}
       <div className="text-center mb-8 text-3xl">
         <Title text1={"Browse"} text2={"The Range"} />
         <p className="text-gray-500 text-sm sm:text-base mt-2">
@@ -134,7 +162,6 @@ const Categories = () => {
         </p>
       </div>
 
-      {/* MOBILE CAROUSEL */}
       <div
         ref={scrollRef}
         className="flex gap-4 overflow-x-auto snap-x snap-mandatory sm:hidden px-6 no-scrollbar"
@@ -146,15 +173,15 @@ const Categories = () => {
             <div
               key={index}
               onClick={() => handleCategoryClick(categories[realIndex].name)}
-              className={`snap-center shrink-0 w-[75%] cursor-pointer 
+              className={`snap-center snap-always shrink-0 w-[75%] cursor-pointer 
               transition-all duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] 
               will-change-transform ${
-                index === activeIndex
+                // matching the real index so all 3 clones scale up simultaneously
+                realIndex === activeRealIndex
                   ? "scale-100 opacity-100 z-10"
                   : "scale-[0.85] opacity-30"
               }`}
             >
-              {/* Image */}
               <div className="rounded-2xl overflow-hidden aspect-3/4 bg-gray-100">
                 <img
                   src={item.image}
@@ -164,8 +191,6 @@ const Categories = () => {
                   ease-[cubic-bezier(0.22,1,0.36,1)]"
                 />
               </div>
-
-              {/* Label */}
               <p className="text-center mt-3 text-lg font-medium">
                 {item.name}
               </p>
@@ -174,7 +199,6 @@ const Categories = () => {
         })}
       </div>
 
-      {/* DESKTOP */}
       <div className="hidden sm:grid grid-cols-2 md:grid-cols-3 gap-6">
         {categories.map((item, index) => (
           <div
@@ -191,7 +215,6 @@ const Categories = () => {
                 group-hover:scale-110"
               />
             </div>
-
             <p className="text-center mt-3 text-lg font-medium">{item.name}</p>
           </div>
         ))}
